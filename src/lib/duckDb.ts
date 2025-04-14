@@ -1,31 +1,30 @@
-import { Database, Connection } from 'duckdb';
+import { Database } from "duckdb-async";
 
 class DuckDBConnection {
-    private db: Database;
-    private connection: Connection;
+  private db: Database | null = null;
 
-    constructor() {
-        this.db = new Database(':memory:');
-        this.connection = this.db.connect();
+  private async connect() {
+    if (!this.db) {
+      this.db = await Database.create(":memory:");
     }
+  }
 
-    async executeQuery(sql: string) {
-        return new Promise((resolve, reject) => {
-            this.connection.all(sql, (err, rows) => {
-                if (err) reject(err);
-                else resolve(rows);
-            });
-        });
-    }
+  async executeQuery(sql: string): Promise<any[]> {
+    await this.connect();
+    return this.db!.all(sql);
+  }
 
-    async runSQL(sql: string): Promise<void> {
-        return new Promise((resolve, reject) => {
-            this.connection.run(sql, (err) => {
-                if (err) reject(err);
-                else resolve();
-            });
-        });
+  async runSQL(sql: string): Promise<void> {
+    await this.connect();
+    await this.db!.run(sql);
+  }
+
+  async close(): Promise<void> {
+    if (this.db) {
+      await this.db.close();
+      this.db = null;
     }
+  }
 }
 
 const duckDBConnection = new DuckDBConnection();

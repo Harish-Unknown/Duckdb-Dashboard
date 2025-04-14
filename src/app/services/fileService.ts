@@ -1,28 +1,68 @@
-import fs from 'fs';
-import path from 'path';
-import { randomUUID } from 'crypto';
-import duckDBConnection from '../../lib/duckDb';
+import fs from "fs";
+import path from "path";
+import { randomUUID } from "crypto";
+import duckDBConnection from "../../lib/duckDb";
+import { Readable } from "stream";
 
-const processCsvFile = async (file: File) => {
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const fileName = `${randomUUID()}.csv`;
-    const filePath = path.join('/tmp', fileName);
+function webStreamToNodeReadable(webStream: ReadableStream): Readable {
+  const reader = webStream.getReader();
+  return new Readable({
+    async read() {
+      const { done, value } = await reader.read();
+      if (done) {
+        this.push(null);
+      } else {
+        this.push(value);
+      }
+    },
+  });
+}
 
-    await fs.promises.writeFile(filePath, buffer);
+export const processCsvFile = async (file: File) => {
+  const fileName = `${randomUUID()}.csv`;
+  const filePath = path.join("/tmp", fileName);
 
-    const query = `
+  const nodeStream = webStreamToNodeReadable(file.stream());
+  const writeStream = fs.createWriteStream(filePath);
+
+  await new Promise<void>((resolve, reject) => {
+    nodeStream.pipe(writeStream);
+    writeStream.on("finish", () => resolve());
+    writeStream.on("error", reject);
+  });
+
+  await duckDBConnection.runSQL(`
+    DROP TABLE IF EXISTS uploaded_data;
+  `);
+
+  const query = `
     CREATE OR REPLACE TABLE uploaded_data AS 
-    SELECT * FROM read_csv_auto('${filePath}');
+    SELECT * FROM read_csv('${filePath}', all_varchar=true);
   `;
 
-    await duckDBConnection.runSQL(query);
+  await duckDBConnection.runSQL(query);
 
-    const rows: any = await duckDBConnection.executeQuery(`SELECT COUNT(*) as row_count FROM uploaded_data`);
-    return rows?.[0]?.row_count || 0;
-}
+  const rows: any = await duckDBConnection.executeQuery(
+    `SELECT COUNT(*) as row_count FROM uploaded_data`
+  );
+  return Number(rows?.[0]?.row_count) || 0;
+};
 
-const previewData = async (limit = 50) => {
-    return duckDBConnection.executeQuery(`SELECT * FROM uploaded_data LIMIT ${limit}`);
-}
+export const previewData = async (limit = 50) => {
+  try {
+    const result = await duckDBConnection.executeQuery(
+      `SELECT * FROM uploaded_data LIMIT ${limit}`
+    );
 
-export { processCsvFile, previewData }
+    return result.map((row) => {
+      const plainRow: Record<string, any> = {};
+      Object.keys(row).forEach((key) => {
+        plainRow[key] = row[key];
+      });
+      return plainRow;
+    });
+  } catch (error) {
+    console.error("Preview data error:", error);
+    throw error;
+  }
+};
